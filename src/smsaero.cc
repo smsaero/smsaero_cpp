@@ -235,6 +235,32 @@ namespace smsaero {
         return request("viber/list", {}, page);
     }
 
+    json SmsAero::send_telegram(
+        const std::string &number,
+        const int code,
+        const std::string &sign,
+        const std::string &text
+    ) {
+        json data = {
+            {"code", code}
+        };
+
+        get_num(number, data);
+
+        if (!sign.empty()) {
+            data["sign"] = sign;
+        }
+        if (!text.empty()) {
+            data["text"] = text;
+        }
+
+        return request("telegram/send", data);
+    }
+
+    json SmsAero::telegram_status(const unsigned int telegram_id) {
+        return request("telegram/status", {{"id", telegram_id}});
+    }
+
     std::vector<std::string> SmsAero::get_gate_urls() {
         if (!url_gate_.empty()) {
             return {url_gate_};

@@ -124,6 +124,14 @@ namespace smsaero {
 
         json viber_list(unsigned int page = 0);
 
+        json send_telegram(
+            const std::string &number,
+            const int code,
+            const std::string &sign = "",
+            const std::string &text = "");
+
+        json telegram_status(unsigned int telegram_id);
+
     private:
         std::string email_;
         std::string api_key_;

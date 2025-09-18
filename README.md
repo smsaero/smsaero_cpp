@@ -18,8 +18,12 @@ const std::string SMSAERO_API_KEY = "your api key";
 int main() {
     try {
         smsaero::SmsAero smsAero(SMSAERO_EMAIL, SMSAERO_API_KEY);
-        const smsaero::json result = smsAero.send("70000000000", "Hello, world!");
+        const smsaero::json result = smsAero.send_sms("70000000000", "Hello, world!");
         std::cout << result << std::endl;
+        
+        // Отправка Telegram кода
+        const smsaero::json telegram_result = smsAero.send_telegram("70000000000", 1234, "SMS Aero", "Ваш код 1234");
+        std::cout << "Telegram result: " << telegram_result << std::endl;
     } catch (const smsaero::SmsAeroError& e) {
         std::cerr << "SmsAero error: " << e.what() << std::endl;
     }
@@ -58,7 +62,7 @@ SMSAERO_API_KEY="your api key"
 
 ```bash
 docker pull 'smsaero/smsaero_cpp:latest'
-docker run -it --rm 'smsaero/smsaero_cpp:latest' smsaero_send -e "your email" -t "your api key" -n 79038805678 -m 'Hello, World!'
+docker run -it --rm 'smsaero/smsaero_cpp:latest' smsaero_send -e "your email" -t "your api key" -n 70000000000 -m 'Hello, World!'
 ```
 
 
