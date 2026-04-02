@@ -1,18 +1,30 @@
 #include "smsaero.hh"
+#include <cstring>
 #include <ctime>
 #include <iomanip>
+#include <memory>
 #include <sstream>
 #include <curl/curl.h>
 
 namespace smsaero {
+
+    static constexpr long DEFAULT_TIMEOUT = 30L;
+    static constexpr long DEFAULT_CONNECT_TIMEOUT = 10L;
+    static constexpr curl_off_t MAX_RESPONSE_SIZE = 10 * 1024 * 1024;
+
+    std::atomic<int> SmsAero::curl_ref_count_{0};
+
+    const std::vector<std::string> SmsAero::GATE_URLS = {
+        "gate.smsaero.ru/v2/",
+        "gate.smsaero.org/v2/",
+        "gate.smsaero.net/v2/",
+    };
+
     SmsAeroError::SmsAeroError(std::string message) : msg_(std::move(message)) {
     }
 
     const char *SmsAeroError::what() const noexcept {
         return msg_.c_str();
-    }
-
-    SmsAeroHTTPError::SmsAeroHTTPError(const std::string &message) : SmsAeroError(message) {
     }
 
     SmsAeroConnectionError::SmsAeroConnectionError(const std::string &message) : SmsAeroError(message) {
@@ -25,11 +37,31 @@ namespace smsaero {
         std::string signature
     ): email_(std::move(email)), api_key_(std::move(api_key)), url_gate_(std::move(url_gate)),
        signature_(std::move(signature)) {
-        curl_global_init(CURL_GLOBAL_DEFAULT);
+        if (curl_ref_count_ == 0) {
+            curl_global_init(CURL_GLOBAL_DEFAULT);
+        }
+        curl_ref_count_++;
+    }
+
+    static void secure_wipe(std::string &s) {
+        if (!s.empty()) {
+            volatile char *p = &s[0];
+            for (size_t i = 0; i < s.size(); ++i) {
+                p[i] = 0;
+            }
+        }
+        s.clear();
     }
 
     SmsAero::~SmsAero() {
-        curl_global_cleanup();
+        secure_wipe(email_);
+        secure_wipe(api_key_);
+        secure_wipe(signature_);
+
+        if (--curl_ref_count_ <= 0) {
+            curl_global_cleanup();
+            curl_ref_count_ = 0;
+        }
     }
 
     json SmsAero::send_sms(
@@ -54,7 +86,7 @@ namespace smsaero {
                 throw SmsAeroError("param `date` is not in correct format");
             }
             std::time_t const time = std::mktime(&tm);
-            data["dateSend"] = static_cast<int>(time);
+            data["dateSend"] = static_cast<int64_t>(time);
         }
         return request("sms/send", data);
     }
@@ -261,6 +293,34 @@ namespace smsaero {
         return request("telegram/status", {{"id", telegram_id}});
     }
 
+    json SmsAero::send_mobile_id(
+        const std::string &number,
+        const std::string &sign,
+        const std::string &callback_url
+    ) {
+        return request("mobile-id/send", {
+            {"number", number},
+            {"sign", sign},
+            {"callbackUrl", callback_url}
+        });
+    }
+
+    json SmsAero::mobile_id_status(const unsigned int req_id) {
+        return request("mobile-id/status", {{"id", req_id}});
+    }
+
+    json SmsAero::verify_mobile_id(
+        const unsigned int req_id,
+        const std::string &code,
+        const std::string &sign
+    ) {
+        return request("mobile-id/verify", {
+            {"id", req_id},
+            {"code", code},
+            {"sign", sign}
+        });
+    }
+
     std::vector<std::string> SmsAero::get_gate_urls() {
         if (!url_gate_.empty()) {
             return {url_gate_};
@@ -269,26 +329,26 @@ namespace smsaero {
     }
 
     size_t SmsAero::WriteCallback(void *contents, const size_t size, const size_t nmemb, void *userp) {
-        auto* userString = static_cast<std::string*>(userp);
-        userString->append(static_cast<char*>(contents), size * nmemb);
-        return size * nmemb;
+        if (nmemb > 0 && size > SIZE_MAX / nmemb) return 0;
+        const size_t chunk = size * nmemb;
+        auto *buf = static_cast<std::string *>(userp);
+        if (buf->size() + chunk > static_cast<size_t>(MAX_RESPONSE_SIZE)) return 0;
+        buf->append(static_cast<char *>(contents), chunk);
+        return chunk;
     }
 
-    json SmsAero::request(const std::string &selector, const json &data, const unsigned int page, std::string proto) {
-        for (const auto &gate: get_gate_urls()) {
+    json SmsAero::request(const std::string &selector, const json &data, const unsigned int page) {
+        for (const auto &gate : get_gate_urls()) {
             try {
-                CURL *curl = curl_easy_init();
-                if (!curl) {
+                CURL *raw_curl = curl_easy_init();
+                if (!raw_curl) {
                     throw SmsAeroConnectionError("Failed to initialize CURL");
                 }
 
-                std::string url = proto;
-                url += "://";
-                char* escaped_email = curl_easy_escape(curl, email_.c_str(), static_cast<int>(email_.size()));
-                url += escaped_email;
-                curl_free(escaped_email);
-                url += ":";
-                url += api_key_;
+                auto curl_deleter = [](CURL *c) { curl_easy_cleanup(c); };
+                std::unique_ptr<CURL, decltype(curl_deleter)> curl(raw_curl, curl_deleter);
+
+                std::string url = "https://";
                 url += gate;
                 url += selector;
 
@@ -296,46 +356,60 @@ namespace smsaero {
                     url += "?page=" + std::to_string(page);
                 }
 
+                std::string auth = email_ + ":" + api_key_;
+
                 std::string readBuffer;
-                curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-                curl_easy_setopt(curl, CURLOPT_POST, 1L);
+                curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
+                curl_easy_setopt(curl.get(), CURLOPT_USERPWD, auth.c_str());
+                curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, WriteCallback);
+                curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &readBuffer);
+                curl_easy_setopt(curl.get(), CURLOPT_POST, 1L);
+                curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, DEFAULT_TIMEOUT);
+                curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, DEFAULT_CONNECT_TIMEOUT);
+                curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);
+                curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);
+                curl_easy_setopt(curl.get(), CURLOPT_MAXFILESIZE_LARGE, MAX_RESPONSE_SIZE);
 
                 std::string jsonData = data.dump();
-                curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonData.c_str());
+                curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, jsonData.c_str());
 
-                struct curl_slist *headers = nullptr;
-                headers = curl_slist_append(headers, "Content-Type: application/json");
-                headers = curl_slist_append(headers, "User-Agent: SACppClient/1.0");
-                curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+                struct curl_slist *raw_headers = nullptr;
+                raw_headers = curl_slist_append(raw_headers, "Content-Type: application/json");
+                raw_headers = curl_slist_append(raw_headers, "User-Agent: SACppClient/1.0");
 
-                CURLcode const res = curl_easy_perform(curl);
+                auto slist_deleter = [](curl_slist *s) { curl_slist_free_all(s); };
+                std::unique_ptr<curl_slist, decltype(slist_deleter)> headers(raw_headers, slist_deleter);
+
+                curl_easy_setopt(curl.get(), CURLOPT_HTTPHEADER, headers.get());
+
+                CURLcode const res = curl_easy_perform(curl.get());
                 if (res != CURLE_OK) {
-                    curl_easy_cleanup(curl);
-                    if (res == CURLE_SSL_CONNECT_ERROR) {
-                        proto = "http";
-                        continue;
-                    }
                     throw SmsAeroConnectionError(curl_easy_strerror(res));
                 }
 
-                auto result = json::parse(readBuffer);
+                json result;
+                try {
+                    result = json::parse(readBuffer);
+                } catch (const json::parse_error &) {
+                    throw SmsAeroConnectionError("Invalid JSON response from server");
+                }
 
-                curl_easy_cleanup(curl);
                 check_response(result);
-
-                return result["data"];
-            } catch (SmsAeroConnectionError &) {
+                return result.value("data", json(nullptr));
+            } catch (const SmsAeroConnectionError &) {
                 continue;
             }
         }
         throw SmsAeroConnectionError("All connection attempts failed");
     }
 
-    void SmsAero::check_response(json response) {
+    void SmsAero::check_response(const json &response) {
+        if (!response.contains("success") || !response["success"].is_boolean()) {
+            throw SmsAeroError("Invalid API response: missing 'success' field");
+        }
         if (!response["success"].get<bool>()) {
-            throw SmsAeroError(response["message"].get<std::string>());
+            std::string msg = response.value("message", "Unknown API error");
+            throw SmsAeroError(msg);
         }
     }
 

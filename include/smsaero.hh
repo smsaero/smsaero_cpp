@@ -1,6 +1,7 @@
 #ifndef SMSAERO_H
 #define SMSAERO_H
 
+#include <atomic>
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -18,11 +19,6 @@ namespace smsaero {
         std::string msg_;
     };
 
-    class SmsAeroHTTPError final : public SmsAeroError {
-    public:
-        explicit SmsAeroHTTPError(const std::string &message);
-    };
-
     class SmsAeroConnectionError final : public SmsAeroError {
     public:
         explicit SmsAeroConnectionError(const std::string &message);
@@ -38,6 +34,11 @@ namespace smsaero {
         );
 
         ~SmsAero();
+
+        SmsAero(const SmsAero &) = delete;
+        SmsAero &operator=(const SmsAero &) = delete;
+        SmsAero(SmsAero &&) = delete;
+        SmsAero &operator=(SmsAero &&) = delete;
 
         json send_sms(
             const std::string &number,
@@ -132,17 +133,21 @@ namespace smsaero {
 
         json telegram_status(unsigned int telegram_id);
 
+        json send_mobile_id(const std::string &number, const std::string &sign, const std::string &callback_url);
+
+        json mobile_id_status(unsigned int req_id);
+
+        json verify_mobile_id(unsigned int req_id, const std::string &code, const std::string &sign);
+
     private:
         std::string email_;
         std::string api_key_;
         std::string url_gate_;
         std::string signature_;
 
-        std::vector<std::string> GATE_URLS = {
-            "@gate.smsaero.ru/v2/",
-            "@gate.smsaero.org/v2/",
-            "@gate.smsaero.net/v2/",
-        };
+        static std::atomic<int> curl_ref_count_;
+
+        static const std::vector<std::string> GATE_URLS;
 
         std::vector<std::string> get_gate_urls();
 
@@ -155,11 +160,10 @@ namespace smsaero {
         json request(
             const std::string &selector,
             const json &data = {},
-            unsigned int page = 0,
-            std::string proto = "https"
+            unsigned int page = 0
         );
 
-        static void check_response(json response);
+        static void check_response(const json &response);
 
         static void get_num(const std::string &number, json &data);
     };

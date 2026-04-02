@@ -1,8 +1,8 @@
-# SmsAero C++ Api client
+# SMSAero C++ Api client
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Library for sending SMS messages using the SmsAero API. Written in C++.
+Library for sending SMS messages using the SMSAero API. Written in C++.
 
 ## Usage example:
 
@@ -25,7 +25,7 @@ int main() {
         const smsaero::json telegram_result = smsAero.send_telegram("70000000000", 1234, "SMS Aero", "Ваш код 1234");
         std::cout << "Telegram result: " << telegram_result << std::endl;
     } catch (const smsaero::SmsAeroError& e) {
-        std::cerr << "SmsAero error: " << e.what() << std::endl;
+        std::cerr << "SMSAero error: " << e.what() << std::endl;
     }
     return 0;
 }
@@ -55,7 +55,7 @@ make
 SMSAERO_EMAIL="your email"
 SMSAERO_API_KEY="your api key"
 
-./bin/demo -u "$SMSAERO_EMAIL" -t "$SMSAERO_API_KEY" -n 70000000000,70000000001 -m 'Hello, World!' | jq .
+./bin/demo -e "$SMSAERO_EMAIL" -t "$SMSAERO_API_KEY" -n 70000000000,70000000001 -m 'Hello, World!' | jq .
 ```
 
 ## Run on Docker:
